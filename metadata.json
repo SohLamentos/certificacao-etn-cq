@@ -1,0 +1,6 @@
+{
+  "name": "Certificação Prática CQ",
+  "description": "Protótipo inicial para o CQ registrar avaliações práticas de técnicos nas tecnologias GPON e HFC.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
