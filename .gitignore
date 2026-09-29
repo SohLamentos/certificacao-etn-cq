@@ -1,0 +1,25 @@
+# Dependências e Builds
+node_modules/
+dist/
+.wrangler/
+coverage/
+
+# Variáveis de Ambiente e Segredos
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+
+# Dados e Bancos Locais / Arquivos Temporários de Teste
+data/*.json
+*.sqlite
+*.sqlite3
+*.db
+*.log
+*.local
+bun.lock
+
+# Sistema Operacional
+.DS_Store
+Thumbs.db

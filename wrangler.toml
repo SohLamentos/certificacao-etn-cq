@@ -1,0 +1,23 @@
+# Configuration for Cloudflare Worker: etn-certificacao-cq-api
+# Pre-Gate 1: Prepared for future deployment (DO NOT DEPLOY YET)
+
+name = "etn-certificacao-cq-api"
+main = "src/worker/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "production"
+API_VERSION = "v1"
+
+# Banco D1 de Produção do Certificação CQ (Criado e migrado na Cloudflare)
+[[d1_databases]]
+binding = "DB"
+database_name = "etn-certificacao-cq-db-prod"
+database_id = "8da94645-7e04-42d0-9105-150246b98b2a"
+migrations_dir = "migrations"
+
+# Service Binding nativo para a autoridade central de identidade (ETN Materiais)
+[[services]]
+binding = "MAT_API"
+service = "etn-materiais-api"
