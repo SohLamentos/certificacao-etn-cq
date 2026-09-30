@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { ShieldCheck, Lock, User, AlertCircle, ArrowRight, Loader2, Info } from 'lucide-react';
-import { SafeUser } from '../server/auth/types';
+import { ShieldCheck, Lock, User, AlertCircle, ArrowRight, Loader2, UserX } from 'lucide-react';
+import { SafeUser, CQRole } from '../server/auth/types';
+import { apiClient } from '../api/client';
 
 interface LoginViewProps {
   onLoginSuccess: (user: SafeUser) => void;
@@ -11,12 +12,12 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
-  const [isLockedOut, setIsLockedOut] = useState(false);
+  const [isAccessDenied, setIsAccessDenied] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
-    setIsLockedOut(false);
+    setIsAccessDenied(false);
 
     if (!login.trim() || !password) {
       setErrorMessage('Por favor, informe seu usuário e sua senha.');
@@ -26,33 +27,48 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
     setLoading(true);
 
     try {
-      const response = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include', // Receive and store HttpOnly cookie
-        body: JSON.stringify({
-          login: login.trim(),
-          password,
-        }),
-      });
-
-      const data = await response.json();
+      const response = await apiClient.login(login.trim(), password);
 
       if (!response.ok) {
-        if (response.status === 423) {
-          setIsLockedOut(true);
+        if (response.status === 403 || response.error === 'APPLICATION_ACCESS_DENIED') {
+          setIsAccessDenied(true);
+          setErrorMessage(
+            response.message ||
+              'Identidade autenticada na autoridade central ETN, porém ainda não possui liberação de acesso ao Certificação CQ. Solicite concessão a um administrador.'
+          );
+        } else if (response.status === 401) {
+          setErrorMessage('Credenciais inválidas ou usuário inativo.');
+        } else if (response.status === 502 || response.error === 'ETN_AUTH_UNAVAILABLE') {
+          setErrorMessage('Serviço central de autenticação ETN temporariamente indisponível.');
+        } else {
+          setErrorMessage(response.message || 'Falha ao autenticar. Tente novamente.');
         }
-        setErrorMessage(data.error || 'Falha ao autenticar. Tente novamente.');
         setLoading(false);
         return;
       }
 
-      // Success: pass safe user to parent
-      onLoginSuccess(data.user);
-    } catch (err) {
+      if (response.data && response.data.user) {
+        const user = response.data.user;
+        const cqAccess = response.data.cq_access;
+        const roles = (cqAccess?.roles as CQRole[]) || ['CQ'];
+        const primaryRole = roles[0] || 'CQ';
+
+        const safeUser: SafeUser = {
+          id: user.id,
+          etn_user_id: user.id,
+          login: user.login,
+          name: user.name,
+          role: primaryRole,
+          roles,
+          status: 'ACTIVE',
+          must_change_password: false,
+        };
+
+        onLoginSuccess(safeUser);
+      }
+    } catch {
       setErrorMessage('Erro de comunicação com o servidor de autenticação.');
+    } finally {
       setLoading(false);
     }
   };
@@ -104,18 +120,19 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
             {errorMessage && (
               <div
                 className={`p-4 rounded-2xl flex items-start space-x-3 text-left transition-all ${
-                  isLockedOut
+                  isAccessDenied
                     ? 'bg-amber-50 border border-amber-200 text-amber-900'
                     : 'bg-red-50 border border-red-200 text-red-900'
                 }`}
               >
-                <AlertCircle
-                  className={`shrink-0 mt-0.5 ${isLockedOut ? 'text-amber-600' : 'text-claro-red'}`}
-                  size={20}
-                />
+                {isAccessDenied ? (
+                  <UserX className="shrink-0 mt-0.5 text-amber-600" size={20} />
+                ) : (
+                  <AlertCircle className="shrink-0 mt-0.5 text-claro-red" size={20} />
+                )}
                 <div className="text-xs font-semibold leading-relaxed">
                   <p className="font-black uppercase tracking-wider mb-0.5">
-                    {isLockedOut ? 'Bloqueio de Segurança' : 'Não foi possível entrar'}
+                    {isAccessDenied ? 'Acesso Não Concedido (CQ)' : 'Não foi possível entrar'}
                   </p>
                   <p>{errorMessage}</p>
                 </div>

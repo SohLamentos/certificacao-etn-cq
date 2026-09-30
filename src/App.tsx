@@ -33,9 +33,10 @@ import CQManagerView from './components/CQManagerView';
 import SettingsView from './components/SettingsView';
 import LoginView from './components/LoginView';
 import AdminDashboardView from './components/AdminDashboardView';
-import ChangePasswordModal from './components/ChangePasswordModal';
 import { Avaliacao, CertificacaoType, AvaliacaoStatus, ChecklistValue, CQ } from './types';
-import { SafeUser } from './server/auth/types';
+import { SafeUser, CQRole } from './server/auth/types';
+import { apiClient, EtnUser } from './api/client';
+import { ShieldAlert } from 'lucide-react';
 import { getDynamicChecklistItems, calcularResultadoDinamico } from './data/dynamicChecklist';
 
 const LOCAL_STORAGE_KEY = 'claro_cq_certificacoes';
@@ -117,21 +118,62 @@ export default function App() {
   // Toast notifications
   const [toast, setToast] = useState<ToastState | null>(null);
 
-  // Check authenticated session with backend on initial load (/api/auth/me)
+  // Acesso negado no CQ (identidade ETN válida, mas sem concessão local)
+  const [accessDeniedInfo, setAccessDeniedInfo] = useState<{ user: EtnUser; message: string } | null>(null);
+
+  // Check authenticated session with backend on initial load (/api/auth/me + /api/cq/me)
   useEffect(() => {
     async function restoreSession() {
+      const token = apiClient.getToken();
+      if (!token) {
+        setAuthLoading(false);
+        return;
+      }
+
       try {
-        const response = await fetch('/api/auth/me', {
-          credentials: 'include',
-        });
-        if (response.ok) {
-          const data = await response.json();
-          setCurrentUser(data.user);
-        } else {
+        // 1. Validar token contra a autoridade central ETN
+        const meRes = await apiClient.authMe();
+        if (!meRes.ok || !meRes.data?.user) {
+          apiClient.clearToken();
           setCurrentUser(null);
+          setAuthLoading(false);
+          return;
         }
+
+        // 2. Validar concessão de acesso ao Certificação CQ
+        const cqRes = await apiClient.cqMe();
+        if (!cqRes.ok || !cqRes.data?.cq_access) {
+          if (cqRes.status === 403) {
+            setAccessDeniedInfo({
+              user: meRes.data.user,
+              message: cqRes.message || 'Identidade autenticada na autoridade central ETN, porém sem concessão de acesso ao Certificação CQ.',
+            });
+          }
+          apiClient.clearToken();
+          setCurrentUser(null);
+          setAuthLoading(false);
+          return;
+        }
+
+        const user = meRes.data.user;
+        const cqData = cqRes.data;
+        const roles = (cqData.roles as CQRole[]) || ['CQ'];
+        const safeUser: SafeUser = {
+          id: user.id,
+          etn_user_id: user.id,
+          login: user.login,
+          name: user.name,
+          role: roles[0] || 'CQ',
+          roles,
+          status: 'ACTIVE',
+          must_change_password: false,
+        };
+
+        setCurrentUser(safeUser);
+        setAccessDeniedInfo(null);
       } catch (err) {
         console.error('Session restoration failed:', err);
+        apiClient.clearToken();
         setCurrentUser(null);
       } finally {
         setAuthLoading(false);
@@ -172,6 +214,7 @@ export default function App() {
 
   const handleLoginSuccess = (user: SafeUser) => {
     setCurrentUser(user);
+    setAccessDeniedInfo(null);
     if (user.role === 'ADMIN') {
       setCurrentView('admin');
     } else {
@@ -180,21 +223,15 @@ export default function App() {
     showToast(`Bem-vindo, ${user.name}!`, 'success');
   };
 
-  const handlePasswordChangeSuccess = (updatedUser: SafeUser) => {
-    setCurrentUser(updatedUser);
-    showToast('Senha alterada com sucesso! Acesso liberado.', 'success');
-  };
-
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', {
-        method: 'POST',
-        credentials: 'include',
-      });
+      await apiClient.authLogout();
     } catch (e) {
       console.error('Logout error:', e);
     } finally {
+      apiClient.clearToken();
       setCurrentUser(null);
+      setAccessDeniedInfo(null);
       setCurrentView('home');
       showToast('Sessão encerrada com sucesso.', 'info');
     }
@@ -314,22 +351,101 @@ export default function App() {
     );
   }
 
-  // 2. Unauthenticated State: Real Login Screen
+  // 2. Access Denied State (Identidade ETN válida, porém sem liberação de acesso CQ)
+  if (accessDeniedInfo) {
+    return (
+      <div className="min-h-screen flex flex-col bg-slate-100 text-claro-dark antialiased">
+        <header className="bg-claro-red text-white py-3 px-4 shadow-sm">
+          <div className="max-w-6xl mx-auto flex items-center justify-between">
+            <div className="flex items-center space-x-2.5 select-none">
+              <div className="bg-white text-claro-red p-1 rounded-full shadow-inner flex items-center justify-center">
+                <ShieldCheck size={20} className="stroke-[2.5]" />
+              </div>
+              <div>
+                <h1 className="font-extrabold text-base sm:text-lg tracking-tight leading-none text-white">
+                  Claro <span className="font-light text-red-100">CQ</span>
+                </h1>
+                <p className="text-[9px] text-red-200 font-medium tracking-wider uppercase leading-none mt-0.5">
+                  Controle de Qualidade
+                </p>
+              </div>
+            </div>
+            <span className="text-[11px] bg-black/20 text-red-100 py-1 px-3 rounded-full font-bold uppercase tracking-wider">
+              Autorização Pendente
+            </span>
+          </div>
+        </header>
+
+        <main className="flex-grow flex items-center justify-center p-4 sm:p-6">
+          <div className="w-full max-w-lg bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden text-left">
+            <div className="h-2.5 bg-amber-500 w-full" />
+            <div className="p-8 sm:p-10 space-y-6">
+              <div className="w-16 h-16 bg-amber-50 text-amber-600 rounded-full flex items-center justify-center border border-amber-200 mx-auto">
+                <ShieldAlert size={36} />
+              </div>
+
+              <div className="text-center space-y-2">
+                <h2 className="text-2xl font-black text-slate-900 tracking-tight">
+                  Acesso Não Concedido ao CQ
+                </h2>
+                <p className="text-xs font-bold text-amber-600 uppercase tracking-wider">
+                  Código: APPLICATION_ACCESS_DENIED (HTTP 403)
+                </p>
+              </div>
+
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3 text-xs">
+                <p className="text-slate-600 font-medium leading-relaxed">
+                  Sua identidade foi confirmada na autoridade central <strong>ETN Materiais</strong>, porém este usuário ainda não possui concessão de acesso ou papel atribuído no <strong>Certificação CQ</strong>.
+                </p>
+                <div className="pt-2 border-t border-slate-200 grid grid-cols-2 gap-2 text-slate-700">
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-bold block uppercase">Nome</span>
+                    <span className="font-bold">{accessDeniedInfo.user.name}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-slate-400 font-bold block uppercase">Login Central</span>
+                    <span className="font-mono font-bold">@{accessDeniedInfo.user.login}</span>
+                  </div>
+                  <div className="col-span-2">
+                    <span className="text-[10px] text-slate-400 font-bold block uppercase">ETN User ID</span>
+                    <span className="font-mono text-[11px] text-slate-600 truncate block">
+                      {accessDeniedInfo.user.id}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-2 space-y-3">
+                <p className="text-xs text-slate-500 text-center font-medium">
+                  Para solicitar liberação ou concessão de papel (ADMIN/CQ/ANALISTA/GESTOR), informe seu ID ao responsável pelo sistema.
+                </p>
+                <button
+                  onClick={() => {
+                    apiClient.clearToken();
+                    setAccessDeniedInfo(null);
+                    setCurrentUser(null);
+                  }}
+                  className="w-full py-3.5 bg-slate-800 hover:bg-slate-900 text-white font-black text-xs rounded-xl uppercase tracking-wider transition-colors cursor-pointer"
+                >
+                  Voltar à Tela de Login
+                </button>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // 3. Unauthenticated State: Real Login Screen
   if (!currentUser) {
     return <LoginView onLoginSuccess={handleLoginSuccess} />;
   }
 
-  // 3. ADMIN User Interface
+  // 4. ADMIN User Interface
   if (currentUser.role === 'ADMIN') {
     return (
       <div className="min-h-screen flex flex-col bg-slate-100 text-claro-dark antialiased">
-        {currentUser.must_change_password && (
-          <ChangePasswordModal
-            user={currentUser}
-            onSuccess={handlePasswordChangeSuccess}
-            onLogout={handleLogout}
-          />
-        )}
         <Header 
           onGoHome={handleGoHome} 
           currentView="admin" 
