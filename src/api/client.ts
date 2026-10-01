@@ -59,21 +59,47 @@ export interface ApiResponse<T = any> {
 
 const TOKEN_STORAGE_KEY = 'etn_cq_auth_token';
 
+// Guard para compatibilidade fora do bundler Vite (ex: suíte de testes Node.js)
+if (typeof import.meta.env === 'undefined') {
+  (import.meta as any).env = {};
+}
+
 // Fallback in-memory store for environments without sessionStorage (e.g. Node tests)
 let memoryToken: string | null = null;
+let testBaseUrlOverride: string | null = null;
+
+/**
+ * Permite configurar override de URL exclusivamente durante execução de testes
+ */
+export function setTestBaseUrl(url: string | null): void {
+  testBaseUrlOverride = url;
+}
 
 /**
  * Normaliza e retorna a URL base da API
  */
 export function getApiBaseUrl(): string {
-  // Em Vite, variáveis de build client-side iniciam com VITE_
-  const meta = typeof import.meta !== 'undefined' ? (import.meta as any) : undefined;
-  const envUrl = meta?.env?.VITE_API_BASE_URL
-    ? String(meta.env.VITE_API_BASE_URL).trim()
-    : '';
+  if (testBaseUrlOverride !== null) {
+    if (!testBaseUrlOverride) {
+      if (import.meta.env.DEV) {
+        return '';
+      }
+      throw new Error('API_BASE_URL_NOT_CONFIGURED');
+    }
+    return testBaseUrlOverride.replace(/\/+$/, '');
+  }
+
+  // Acesso direto para que o Vite realize a substituição estática durante o build
+  const rawUrl = import.meta.env.VITE_API_BASE_URL;
+  const envUrl = rawUrl ? String(rawUrl).trim() : '';
 
   if (!envUrl) {
-    return '';
+    // Permite fallback relativo apenas no ambiente local de desenvolvimento
+    if (import.meta.env.DEV) {
+      return '';
+    }
+    // Em produção ou build sem variável, fail-closed explícito
+    throw new Error('API_BASE_URL_NOT_CONFIGURED');
   }
 
   // Remove trailing slashes para evitar //api/...
@@ -130,9 +156,23 @@ export async function apiFetch<T = any>(
   path: string,
   options: RequestInit = {}
 ): Promise<ApiResponse<T>> {
-  const baseUrl = getApiBaseUrl();
+  let baseUrl: string;
+  try {
+    baseUrl = getApiBaseUrl();
+  } catch (err: any) {
+    if (err?.message === 'API_BASE_URL_NOT_CONFIGURED') {
+      return {
+        ok: false,
+        status: 500,
+        error: 'API_BASE_URL_NOT_CONFIGURED',
+        message: 'A URL da API de certificação não está configurada no ambiente.',
+      };
+    }
+    throw err;
+  }
+
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  const fullUrl = `${baseUrl}${normalizedPath}`;
+  const fullUrl = path.startsWith('http') ? path : `${baseUrl}${normalizedPath}`;
 
   const headers = new Headers(options.headers || {});
 
@@ -192,6 +232,7 @@ export async function apiFetch<T = any>(
  */
 export const apiClient = {
   getApiBaseUrl,
+  setTestBaseUrl,
   getToken,
   setToken,
   clearToken,

@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { apiClient, getApiBaseUrl, getToken, setToken, clearToken, apiFetch } from '../src/api/client';
+import { apiClient, getApiBaseUrl, setTestBaseUrl, getToken, setToken, clearToken, apiFetch } from '../src/api/client';
 
 describe('ETN Certificação CQ — Pages Gate 2: Frontend API Client & Auth ETN (16 Cenários)', () => {
   const originalFetch = globalThis.fetch;
@@ -11,17 +11,20 @@ describe('ETN Certificação CQ — Pages Gate 2: Frontend API Client & Auth ETN
   beforeEach(() => {
     clearToken();
     mockFetchCalls = [];
+    setTestBaseUrl('https://etn-certificacao-cq-api.persistentesoficial365.workers.dev');
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
     clearToken();
+    setTestBaseUrl(null);
   });
 
   it('1. API base de produção normaliza trailing slash e respeita fallback', () => {
-    // Teste de normalização
+    setTestBaseUrl('https://etn-certificacao-cq-api.persistentesoficial365.workers.dev/');
     const base = getApiBaseUrl();
     assert.equal(base.endsWith('/'), false, 'Não deve ter trailing slash');
+    assert.equal(base, 'https://etn-certificacao-cq-api.persistentesoficial365.workers.dev');
   });
 
   it('2. Login 200 armazena token no client storage', async () => {
@@ -356,5 +359,95 @@ describe('ETN Certificação CQ — Pages Gate 2: Frontend API Client & Auth ETN
       );
       assert.equal(call.url.includes('token='), false, `Query param de token detectado em ${call.url}`);
     }
+  });
+
+  it('17. Variável VITE_API_BASE_URL ausente em produção gera erro explícito API_BASE_URL_NOT_CONFIGURED', async () => {
+    setTestBaseUrl('');
+
+    // getApiBaseUrl() deve lançar exceção direta em produção
+    assert.throws(
+      () => getApiBaseUrl(),
+      (err: any) => err.message === 'API_BASE_URL_NOT_CONFIGURED'
+    );
+
+    // apiFetch deve capturar e retornar resposta estruturada segura
+    const res = await apiFetch('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ login: 'admin', password: '123' }),
+    });
+
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 500);
+    assert.equal(res.error, 'API_BASE_URL_NOT_CONFIGURED');
+    assert.equal(
+      res.message,
+      'A URL da API de certificação não está configurada no ambiente.'
+    );
+  });
+
+  it('18. Login com VITE_API_BASE_URL configurada monta URL exata do Worker', async () => {
+    setTestBaseUrl('https://etn-certificacao-cq-api.persistentesoficial365.workers.dev');
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      mockFetchCalls.push({ url: String(input), options: init || {} });
+      return new Response(
+        JSON.stringify({
+          success: true,
+          token: 'tok-ok',
+          user: { id: 'u1', name: 'User', login: 'user', role: 'ADMIN' },
+          cq_access: { id: 'a1', enabled: true },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    };
+
+    const res = await apiClient.login('user', 'Pass123!');
+    assert.equal(res.ok, true);
+    assert.equal(mockFetchCalls.length, 1);
+    assert.equal(
+      mockFetchCalls[0].url,
+      'https://etn-certificacao-cq-api.persistentesoficial365.workers.dev/api/auth/login'
+    );
+  });
+
+  it('19. Nenhuma chamada produtiva utiliza a origem do Pages (etn-certificacao-cq.pages.dev)', async () => {
+    setTestBaseUrl('https://etn-certificacao-cq-api.persistentesoficial365.workers.dev');
+    setToken('token-verificacao-origem');
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      mockFetchCalls.push({ url: String(input), options: init || {} });
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    await apiClient.login('admin', 'password');
+    await apiClient.authMe();
+    await apiClient.cqMe();
+    await apiClient.adminProbe();
+    await apiClient.authLogout();
+
+    for (const call of mockFetchCalls) {
+      assert.equal(
+        call.url.includes('pages.dev'),
+        false,
+        `Chamada direcionada incorretamente para o Pages: ${call.url}`
+      );
+      assert.equal(
+        call.url.startsWith('https://etn-certificacao-cq-api.persistentesoficial365.workers.dev'),
+        true,
+        `URL não utiliza o Worker esperado: ${call.url}`
+      );
+    }
+  });
+
+  it('20. Código do frontend não usa process.env nem indirection const meta = import.meta', () => {
+    const clientCode = fs.readFileSync(path.resolve(process.cwd(), 'src/api/client.ts'), 'utf-8');
+
+    assert.equal(clientCode.includes('process.env'), false, 'Não deve utilizar process.env no frontend');
+    assert.equal(clientCode.includes('const meta ='), false, 'Não deve utilizar indireção const meta =');
+    assert.equal(
+      clientCode.includes('import.meta.env.VITE_API_BASE_URL'),
+      true,
+      'Deve acessar import.meta.env.VITE_API_BASE_URL diretamente'
+    );
   });
 });
